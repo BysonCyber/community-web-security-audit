@@ -1,0 +1,6 @@
+reports/
+*.json
+*.csv
+*.html
+*.log
+.DS_Store
