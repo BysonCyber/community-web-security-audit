@@ -1,6 +1,7 @@
 reports/
-*.json
-*.csv
-*.html
 *.log
+*.tmp
+.env
+.dev.vars
 .DS_Store
+Thumbs.db

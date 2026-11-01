@@ -53,3 +53,7 @@ The original Byson-specific policy expects GET=405, cross-origin=403, malformed 
 ## v1.2.4 guided Full-mode confirmation
 
 The additional Full-mode consent prompt accepts `yes`, `Yes`, `YES`, or any other capitalization of the full word `yes`. Other responses change the run to read-only Deep; `y` remains valid at the separate general permission prompt.
+
+## Optional files and observation-only grades (v1.2.6)
+
+A missing default `robots.txt`, `sitemap.xml` or `/.well-known/security.txt` file is normally informational, not an exploitable security finding. An existing `security.txt` should have a valid, nonexpired `Expires`; RFC 9116 recommends less than one year in the future. A longer but still-valid date is INFO, not WARN. CAA records are also observational unless you explicitly configure the expected issuer/reporting values. Resolver record counts do not validate an issuer's authorization or certificate-renewal compatibility.

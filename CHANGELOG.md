@@ -1,3 +1,20 @@
+## v1.2.6 - Clearer optional-file, expiry and CAA reporting (2026-11-01)
+
+- Missing default optional robots, sitemap and security.txt files (404/410) are INFO, not WARN; real errors and non-optional missing routes retain WARN.
+- `security.txt` expirations more than 365 days ahead generate INFO per RFC 9116 recommendation. Expired, missing and invalid dates remain WARN.
+- Unconfigured CAA issuer/report expectations are not policy-validated; records found by both resolvers are INFO, not PASS. Explicit expectations retain strict PASS/WARN classification.
+- Preserve Windows PowerShell 5.1 ASCII-safe BOM/CRLF compatibility and all v1.2.5 curl, authorization and report behavior.
+- Static source/package checks completed; test the new script on Windows before publishing.
+
+## v1.2.5 - Windows TLS probe crash fix (2026-11-01)
+
+- Fixes Windows PowerShell 5.1 terminating on expected `curl.exe` TLS handshake errors (for example, Schannel `SEC_E_UNSUPPORTED_FUNCTION`) while `ErrorActionPreference` is Stop.
+- For each curl probe, temporarily relaxes native stderr handling and uses the process exit code to classify the result, restoring the error preference afterward.
+- An unsupported TLS 1.3 handshake is now reported as a compatibility WARN while the audit continues to TLS 1.2, headers, DNS, and exposure checks; no site vulnerability is assumed from the single result.
+- Corrected the version metadata displayed in CSV/JSON/HTML and the console to v1.2.5.
+- No changes to Full-mode API authorization, pacing, read-only behavior, or production configurations.
+- Windows PowerShell 5.1 live-run confirmation is still recommended after installing this update.
+
 ## v1.2.4 - Full-mode consent usability fix (2026-11-01)
 
 - Guided Full now accepts `yes`, `Yes`, `YES` (any capitalization, optional whitespace) for explicit API POST authorization instead of only uppercase `YES`.

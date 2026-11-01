@@ -20,7 +20,7 @@
   .\Invoke-WebSecurityReview.ps1
   # Guided setup; accepts domain, scan type, API paths and report preference.
 .NOTES
-  v1.2.4 | Byson Cyber | Into the Storm
+  v1.2.6 | Byson Cyber | Into the Storm
   NOT a penetration test. Only test domains you own or are authorized to assess.
 #>
 [CmdletBinding()]
@@ -293,8 +293,18 @@ function Invoke-HttpProbe {
         if ($ExtraCurlArgs.Count -gt 0) { $curlArgs += $ExtraCurlArgs }
         $curlArgs += $Url # Append ONCE. Curl should never request the same URL twice.
         $script:RequestCount++
-        $raw = & $script:CurlExecutable @curlArgs 2>$null
-        $curlExit = $LASTEXITCODE
+        # Windows PowerShell 5.1 can elevate native stderr into a terminating
+        # NativeCommandError under ErrorActionPreference=Stop, even with 2>$null.
+        # A rejected TLS-version probe is an EXPECTED curl exit, not a script error.
+        # Temporarily allow native stderr and always classify via LASTEXITCODE.
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $raw = & $script:CurlExecutable @curlArgs 2>$null
+            $curlExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
         $parts = ([string]($raw -join "`n")) -split '\|', 3
         $status = 0
         if ($parts.Count -gt 0) { [void][int]::TryParse($parts[0].Trim(), [ref]$status) }
@@ -371,7 +381,7 @@ if (-not $curlCommand) { $curlCommand=Get-Command 'curl' -CommandType Applicatio
 if (-not $curlCommand) { throw 'Command-line curl was not found. Install curl to run this audit.' }
 $script:CurlExecutable=$curlCommand.Source
 
-Write-Host "`nBYSON CYBER - COMMUNITY WEB SECURITY REVIEW v1.2.3" -ForegroundColor Cyan
+Write-Host "`nBYSON CYBER - COMMUNITY WEB SECURITY REVIEW v1.2.6" -ForegroundColor Cyan
 Write-Host "Input: $SiteUrl" -ForegroundColor Cyan
 Write-Host "Audit mode: $Mode" -ForegroundColor Cyan
 Write-Host 'Default mode: ordinary GET requests and public DNS queries.'
@@ -445,7 +455,10 @@ if ($targetOrigin) {
         if ($route.ExitCode -ne 0) { Add-Finding 'Routes' "Public $p" 'WARN' "curl exit $($route.ExitCode); HTTP $($route.Status)" }
         elseif ($route.Status -eq 200) { Add-Finding 'Routes' "Public $p" 'PASS' 'HTTP 200' }
         elseif ($p -eq '/') { Add-Finding 'Routes' 'Homepage reachable' 'FAIL' "HTTP $($route.Status)" }
-        else { Add-Finding 'Routes' "Optional page $p" 'WARN' "HTTP $($route.Status); may be intentional" }
+        elseif ($p -in @('/robots.txt','/sitemap.xml','/.well-known/security.txt') -and $route.Status -in @(404,410)) {
+            Add-Finding 'Routes' "Optional page $p" 'INFO' "HTTP $($route.Status); this file is optional, not a security vulnerability"
+        }
+        else { Add-Finding 'Routes' "Public $p" 'WARN' "HTTP $($route.Status); verify site-specific expectations" }
     }
 
     # security.txt: optional for community sites; check RFC 9116 basics when present.
@@ -456,8 +469,18 @@ if ($targetOrigin) {
         $expiryMatch=[regex]::Match($disclosure.Content,'(?im)^Expires:\s*(\S+)')
         $expiryDate=[DateTimeOffset]::MinValue
         $validExpiry=$expiryMatch.Success -and [DateTimeOffset]::TryParse($expiryMatch.Groups[1].Value,[ref]$expiryDate)
-        $isFresh=$validExpiry -and $expiryDate -gt [DateTimeOffset]::UtcNow
-        Add-Finding 'Disclosure' 'security.txt expiration' $(if ($isFresh) { 'PASS' } else { 'WARN' }) $(if ($validExpiry) { "Expires $($expiryDate.ToString('u'))" } else { 'Missing/invalid Expires' })
+        $nowUtc=[DateTimeOffset]::UtcNow
+        $isFresh=$validExpiry -and $expiryDate -gt $nowUtc
+        # RFC 9116 recommends an expiration less than one year into the future
+        # so the security contact gets reviewed. This is advisory, not a failure.
+        $isDistant=$isFresh -and $expiryDate -gt $nowUtc.AddDays(365)
+        $expiryStatus=if (-not $isFresh) { 'WARN' } elseif ($isDistant) { 'INFO' } else { 'PASS' }
+        $expiryDetail=if (-not $validExpiry) { 'Missing/invalid Expires' } elseif (-not $isFresh) {
+            "Expired $($expiryDate.ToString('u')); update contact and expiration"
+        } elseif ($isDistant) {
+            "Expires $($expiryDate.ToString('u')); RFC 9116 recommends less than 1 year in the future to reduce staleness"
+        } else { "Expires $($expiryDate.ToString('u'))" }
+        Add-Finding 'Disclosure' 'security.txt expiration' $expiryStatus $expiryDetail
     } else { Add-Finding 'Disclosure' 'security.txt' 'INFO' 'Optional disclosure file not present' }
 
     $homepageResponse=Invoke-HttpProbe -Url "$targetOrigin/" -FollowRedirects -ReadBody
@@ -548,10 +571,19 @@ if ($targetOrigin) {
         Add-Finding 'Headers' 'Homepage Cache-Control' 'INFO' $(if ($cacheHtml) { $cacheHtml } else { 'Absent; public pages may be cacheable' })
         if ($secureSite) {
             $tls13=Invoke-HttpProbe -Url "$targetOrigin/" -ExtraCurlArgs @('--tlsv1.3','--tls-max','1.3')
-            Add-Finding 'TLS' 'TLS 1.3 handshake (compatibility)' $(if ($tls13.ExitCode -eq 0 -and $tls13.Status -gt 0) { 'PASS' } else { 'WARN' }) "curl=$($tls13.ExitCode); HTTP=$($tls13.Status)"
+            $tls13Ok=($tls13.ExitCode -eq 0 -and $tls13.Status -gt 0)
+            $tls13Detail="curl=$($tls13.ExitCode); HTTP=$($tls13.Status)"
+            if (-not $tls13Ok) {
+                $tls13Detail+='; TLS 1.3 not negotiated by this client. This can reflect server policy or Windows curl/Schannel compatibility; verify independently.'
+            }
+            Add-Finding 'TLS' 'TLS 1.3 handshake (compatibility)' $(if ($tls13Ok) { 'PASS' } else { 'WARN' }) $tls13Detail
             if (-not $ExpectTLS13Only) {
                 $tls12=Invoke-HttpProbe -Url "$targetOrigin/" -ExtraCurlArgs @('--tlsv1.2','--tls-max','1.2')
-                Add-Finding 'TLS' 'TLS 1.2 allowed (compatibility)' 'INFO' "curl=$($tls12.ExitCode); HTTP=$($tls12.Status); TLS 1.2 support is not automatically a flaw"
+                $tls12Ok=($tls12.ExitCode -eq 0 -and $tls12.Status -gt 0)
+                $tls12Detail="curl=$($tls12.ExitCode); HTTP=$($tls12.Status)"
+                if ($tls12Ok) { $tls12Detail+='; TLS 1.2 supported; this is not automatically a flaw' }
+                else { $tls12Detail+='; TLS 1.2 not negotiated by this client; not automatically a site flaw' }
+                Add-Finding 'TLS' 'TLS 1.2 allowed (compatibility)' 'INFO' $tls12Detail
             }
         } else {
             Add-Finding 'TLS' 'Version negotiation' 'SKIP' 'HTTPS unavailable; no TLS protocol test possible'
@@ -630,8 +662,17 @@ if ($targetOrigin) {
         if ($available -lt 2) { $graded='WARN' }
         elseif ($ExpectedCAAIssuer -or $ExpectedCAAReport) {
             if ($matching -eq 2) { $graded='PASS' } else { $graded='WARN' }
-        } elseif (@($resolverResults | Where-Object { $_.Count -gt 0 }).Count -eq 2) { $graded='PASS' }
-        $details=($resolverResults | ForEach-Object { "$($_.Provider):dns=$($_.Status),count=$($_.Count),issuer=$($_.Issuer),report=$($_.Report)" }) -join '; '
+        }
+        # With no site-specific issuer/report expectations, record presence is
+        # only an observation. It is not proof the CA policy is safe or correct.
+        $details=($resolverResults | ForEach-Object {
+            $issuerValue=if ($ExpectedCAAIssuer) { $_.Issuer } else { 'not-checked' }
+            $reportValue=if ($ExpectedCAAReport) { $_.Report } else { 'not-checked' }
+            "$($_.Provider):dns=$($_.Status),count=$($_.Count),issuer=$issuerValue,report=$reportValue"
+        }) -join '; '
+        if (-not $ExpectedCAAIssuer -and -not $ExpectedCAAReport) {
+            $details+='; record presence only, CAA policy not validated'
+        }
         Add-Finding 'DNS' "CAA $zone" $graded $details
     }
 
@@ -836,7 +877,7 @@ if ($ExportPrefix) {
     $jsonFile="$ExportPrefix.json"; $csvFile="$ExportPrefix.csv"
     $payload=[pscustomobject]@{
         created_utc=[DateTime]::UtcNow.ToString('o')
-        version='1.2.3'
+        version='1.2.5'
         mode=$Mode
         input=$SiteUrl
         audited_origin=$targetOrigin
@@ -860,7 +901,7 @@ if ($ExportPrefix) {
     $safeSite=[System.Net.WebUtility]::HtmlEncode($targetOrigin)
     $htmlParts=@('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Byson Cyber  -  Website Audit Report</title>',
         '<style>body{font:15px system-ui,sans-serif;max-width:1500px;margin:2rem auto;padding:0 1rem;color:#11212d;background:#f8f9fb}h1{color:#081a26}small{color:#52616b}table{border-collapse:collapse;width:100%;background:white}th,td{text-align:left;vertical-align:top;padding:.6rem;border-bottom:1px solid #d7dde3;overflow-wrap:anywhere}th{background:#e7ecf0}tr.fail{background:#ffe5e5}tr.warn{background:#fff4d8}tr.skip{color:#566}a{color:#245788}footer{margin:2rem 0}code{white-space:normal}</style></head><body>',
-        "<h1>Byson Cyber  -  Website Security Review</h1><p>Version 1.2.3  |  Mode: $Mode  |  Origin: <code>$safeSite</code></p>",
+        "<h1>Byson Cyber  -  Website Security Review</h1><p>Version 1.2.6  |  Mode: $Mode  |  Origin: <code>$safeSite</code></p>",
         "<p><strong>PASS $pass  |  WARN $warn  |  FAIL $fail  |  INFO $info  |  SKIP $skip</strong>  -  $($script:RequestCount) HTTP probes</p>",
         '<p><strong>Important:</strong> Automated checks are observational. This report is not a penetration test, security certification, or compliance attestation.</p>',
         '<table><thead><tr><th>Status</th><th>Area</th><th>Check</th><th>Severity</th><th>Observation</th><th>Why it matters</th><th>Recommended next step</th><th>Source</th></tr></thead><tbody>',

@@ -1,12 +1,22 @@
-## v1.2.4 - Guided Full confirmation accepts yes in any case
-
 When the wizard asks for explicit Full-mode API POST permission, type `yes`, `Yes`, or `YES` (any capitalization, optional surrounding whitespace). A response other than the full word `yes` still safely switches to Deep with no POST requests. The site ownership/permission prompt continues to accept `y` or `yes` (any case). This changes only the no-argument guided flow; script arguments and the Byson production preset are unchanged.
 
-# Byson Cyber — Community Website Security Audit v1.2.4
+# Byson Cyber — Community Website Security Audit v1.2.6
 
 A PowerShell tool that runs **low-impact, authorized website configuration checks** and explains why the results matter. Use it for your own websites, to teach good security practices, or with permission to assess a client's site.
 
 **Compatibility:** Windows PowerShell 5.1+ or PowerShell 7, with the `curl` executable installed. It uses Google and Cloudflare public DNS-over-HTTPS for observations; no Cloudflare account, API key, or third-party PowerShell modules required. Designed to work with `http://example.com`, `https://example.com`, or `example.com` input. It prefers HTTPS, follows same-base-domain apex/www redirects, and reports missing HTTPS without refusing to continue its safe GET checks.
+
+## v1.2.6 - Results classification refinements
+
+- Missing optional `robots.txt`, `sitemap.xml` or `/.well-known/security.txt` (HTTP 404/410) is **INFO**, not a security warning. Explicitly requested non-optional routes still WARN when missing; server errors still WARN.
+- An otherwise valid `security.txt` with `Expires` more than 365 days away is **INFO** with an RFC 9116 maintenance recommendation (not a vulnerability). Missing, invalid or expired dates still WARN.
+- Generic CAA presence is now **INFO**, even when both resolvers find records; this tool does not validate policy quality without explicit issuer/report expectations. Strict CAA checks with `-ExpectedCAAIssuer` or `-ExpectedCAAReport` still use PASS/WARN.
+- EngineFlow Labs and Coffee & Computers testing confirmed v1.2.5 under PowerShell 7.7 Preview and Windows PowerShell 5.1 respectively. Note: launching `powershell.exe` from `pwsh` switches into Windows PowerShell; use `pwsh.exe -NoProfile -ExecutionPolicy Bypass` to remain in PowerShell 7.
+- This version makes no changes to request pacing, API consent, TLS behavior, or website configurations. Run local syntax checks and verify on an authorized site before public release.
+
+## v1.2.5 - Windows curl TLS compatibility fix
+
+On Windows PowerShell 5.1, some sites can reject a TLS version probe (e.g., TLS 1.3) and `curl.exe` prints a Schannel diagnostic to stderr. Earlier versions stopped with `NativeCommandError` under `ErrorActionPreference=Stop` before reporting any findings. v1.2.5 catches this expected network-probe behavior, records a TLS compatibility WARN, and keeps auditing. It never assumes a TLS 1.3 failure alone proves an insecure site; TLS 1.2 is still a supported secure protocol when correctly configured. Validate independently with `curl.exe -Iv --tlsv1.3 --tls-max 1.3 https://YOUR-AUTHORIZED-HOST/` and TLS 1.2 equivalents if desired. Do not use `-k` to bypass certificate validation when comparing results.
 
 ## New: Guided setup (no PowerShell experience needed)
 
@@ -21,13 +31,13 @@ The tool asks for the domain, scan type, and authorization to test the website. 
 Example prompts:
 
 ```text
-1. What website/domain should we review? (example.com): deltarealtyllc.com
+1. What website/domain should we review? (example.com): example.com
 2. What type of review do you want?
    [1] Standard (recommended first)
    [2] Deep
    [3] Full (invalid POSTs to approved API paths)
 Choose 1, 2, or 3 [default: 1]: 2
-Selected: deltarealtyllc.com | Deep
+Selected: example.com | Deep
 Do you own or have permission to test this website? [y/N]: y
 3. Save an HTML, CSV, and JSON report? [Y/n]: y
 Running Deep review...
@@ -53,7 +63,7 @@ In Windows PowerShell, from the extracted toolkit folder (run the syntax check b
 
 ```powershell
 .\Test-WebAudit-Syntax.ps1
-.\Invoke-WebSecurityReview.ps1 -SiteUrl deltarealtyllc.com -Deep -ExportPrefix '.\reports\delta'
+.\Invoke-WebSecurityReview.ps1 -SiteUrl example.com -Deep -ExportPrefix '.\reports\delta'
 ```
 
 A missing COOP header or CAA record is **not inherently a vulnerability**. The script treats those as INFO unless a site-specific policy explicitly requires them. A TLS 1.2-capable site is not automatically insecure; enforce TLS 1.3-only only if compatible and required for your deployment.
